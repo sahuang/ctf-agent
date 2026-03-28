@@ -17,13 +17,9 @@ from pydantic_ai.settings import ModelSettings
 if TYPE_CHECKING:
     from backend.config import Settings
 
-# Default model specs — claude-sdk and codex providers use the new solver backends
+# Default model specs — keep the default setup on a single Codex model.
 DEFAULT_MODELS: list[str] = [
-    "claude-sdk/claude-opus-4-6/medium",
-    "claude-sdk/claude-opus-4-6/max",
-    "codex/gpt-5.4",
-    "codex/gpt-5.4-mini",
-    "codex/gpt-5.3-codex",
+    "codex/gpt-5.4/xhigh",
 ]
 
 # Context window sizes (tokens)
@@ -134,6 +130,14 @@ def model_id_from_spec(spec: str) -> str:
     return parts[1] if len(parts) >= 2 else spec
 
 
+def base_model_spec(spec: str) -> str:
+    """Normalize a model spec to 'provider/model_id' when possible."""
+    parts = spec.split("/")
+    if len(parts) >= 2:
+        return "/".join(parts[:2])
+    return spec
+
+
 def provider_from_spec(spec: str) -> str:
     """Extract the provider from a spec."""
     return spec.split("/", 1)[0]
@@ -142,8 +146,20 @@ def provider_from_spec(spec: str) -> str:
 def effort_from_spec(spec: str) -> str | None:
     """Extract effort level from a spec like 'claude-sdk/claude-opus-4-6/max'."""
     parts = spec.split("/")
-    if len(parts) >= 3 and parts[2] in ("low", "medium", "high", "max"):
+    if len(parts) >= 3 and parts[2] in ("low", "medium", "high", "max", "xhigh"):
         return parts[2]
+    return None
+
+
+def codex_reasoning_effort(spec: str) -> str | None:
+    """Resolve Codex reasoning effort from a model spec."""
+    effort = effort_from_spec(spec)
+    if effort in ("max", "xhigh"):
+        return "xhigh"
+    if effort:
+        return effort
+    if model_id_from_spec(spec) == "gpt-5.3-codex":
+        return "xhigh"
     return None
 
 

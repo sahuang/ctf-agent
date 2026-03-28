@@ -177,7 +177,12 @@ class CTFdClient:
             # Use team solves if on a team, otherwise user solves
             team_id = user_data.get("team_id")
             if team_id:
-                solves = await self._get(f"/teams/{team_id}/solves")
+                try:
+                    # Some CTFd deployments expose the current team's solves at /teams/me/solves
+                    # while rejecting /teams/{team_id}/solves.
+                    solves = await self._get("/teams/me/solves")
+                except Exception:
+                    solves = await self._get(f"/teams/{team_id}/solves")
             else:
                 user_id = user_data.get("id")
                 if not user_id:

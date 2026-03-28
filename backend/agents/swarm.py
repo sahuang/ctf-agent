@@ -12,7 +12,7 @@ from backend.agents.solver import Solver
 from backend.cost_tracker import CostTracker
 from backend.ctfd import CTFdClient
 from backend.message_bus import ChallengeMessageBus
-from backend.models import DEFAULT_MODELS, provider_from_spec
+from backend.models import DEFAULT_MODELS, base_model_spec, model_id_from_spec, provider_from_spec
 from backend.prompts import ChallengeMeta
 from backend.solver_base import (
     CANCELLED,
@@ -40,7 +40,7 @@ QUOTA_FALLBACK: dict[str, str] = {
 
 
 def _quota_fallback_spec(model_spec: str) -> str | None:
-    return QUOTA_FALLBACK.get(model_spec)
+    return QUOTA_FALLBACK.get(base_model_spec(model_spec))
 
 
 @dataclass
@@ -66,6 +66,7 @@ class ChallengeSwarm:
     _submitted_flags: set[str] = field(default_factory=set)  # dedup exact flags
     _last_submit_time: dict[str, float] = field(default_factory=dict)  # per-model last submit timestamp
     message_bus: ChallengeMessageBus = field(default_factory=ChallengeMessageBus)
+    started_at: float = field(default_factory=time.time)
 
     def _create_solver(self, model_spec: str):
         """Create the right solver type based on provider.
@@ -333,16 +334,48 @@ class ChallengeSwarm:
 
     def get_status(self) -> dict:
         """Get per-agent progress and findings."""
+        agents: dict[str, dict] = {}
+        for spec in self.model_specs:
+            solver = self.solvers.get(spec)
+            usage = self.cost_tracker.by_agent.get(getattr(solver, "agent_name", ""))
+            if solver:
+                raw_steps = getattr(solver, "_step_count", 0)
+                step_count = raw_steps[0] if isinstance(raw_steps, list) else raw_steps
+                if getattr(solver, "_confirmed", False):
+                    status = "won"
+                elif getattr(solver, "_turn_error", None):
+                    status = "error"
+                elif self.cancel_event.is_set():
+                    status = "cancelled"
+                else:
+                    status = "running"
+                findings = getattr(solver, "_findings", "") or self.findings.get(spec, "")
+                flag = getattr(solver, "_flag", None)
+                trace_path = getattr(getattr(solver, "tracer", None), "path", "")
+            else:
+                step_count = 0
+                status = "cancelled" if self.cancel_event.is_set() else "pending"
+                findings = self.findings.get(spec, "")
+                flag = None
+                trace_path = ""
+
+            agents[spec] = {
+                "model_spec": spec,
+                "model_id": model_id_from_spec(spec),
+                "provider": provider_from_spec(spec),
+                "findings": findings,
+                "status": status,
+                "step_count": step_count,
+                "flag": flag,
+                "trace_path": trace_path,
+                "cost_usd": usage.cost_usd if usage else 0.0,
+                "total_tokens": usage.usage.total_tokens if usage else 0,
+            }
+
         return {
             "challenge": self.meta.name,
+            "started_at": self.started_at,
             "cancelled": self.cancel_event.is_set(),
             "winner": self.winner.flag if self.winner else None,
-            "agents": {
-                spec: {
-                    "findings": self.findings.get(spec, ""),
-                    "status": "running" if spec in self.solvers and not self.cancel_event.is_set()
-                             else ("won" if self.winner and self.winner.flag else "finished"),
-                }
-                for spec in self.model_specs
-            },
+            "agents": agents,
         }

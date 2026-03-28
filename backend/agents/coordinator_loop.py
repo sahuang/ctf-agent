@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable, Coroutine
 from pathlib import Path
@@ -12,6 +11,7 @@ from typing import Any
 from backend.config import Settings
 from backend.cost_tracker import CostTracker
 from backend.ctfd import CTFdClient
+from backend.dashboard import DashboardState, start_dashboard_server
 from backend.deps import CoordinatorDeps
 from backend.models import DEFAULT_MODELS
 from backend.poller import CTFdPoller
@@ -84,9 +84,14 @@ async def run_event_loop(
     """
     poller = CTFdPoller(ctfd=ctfd, interval_s=5.0)
     await poller.start()
+    dashboard = DashboardState()
 
-    # Start operator message HTTP endpoint
-    msg_server = await _start_msg_server(deps.operator_inbox, deps.msg_port)
+    # Start dashboard and operator message HTTP endpoint
+    try:
+        msg_server = await start_dashboard_server(deps, poller, cost_tracker, dashboard, deps.msg_port)
+    except OSError as e:
+        logger.warning("Could not start dashboard server: %s", e)
+        msg_server = None
 
     logger.info(
         "Coordinator starting: %d models, %d challenges, %d solved",
@@ -102,12 +107,12 @@ async def run_event_loop(
         f"Unsolved: {sorted(unsolved) if unsolved else 'NONE'}\n"
         "Fetch challenges and spawn swarms for all unsolved."
     )
+    dashboard.add_event("startup", initial_msg)
 
     try:
-        await turn_fn(initial_msg)
-
-        # Auto-spawn swarms for unsolved challenges if coordinator LLM didn't
+        # Start attacking immediately; don't block solver startup on the first coordinator turn.
         await _auto_spawn_unsolved(deps, poller)
+        await turn_fn(initial_msg)
 
         last_status = asyncio.get_event_loop().time()
 
@@ -125,6 +130,7 @@ async def run_event_loop(
                     if not swarm.cancel_event.is_set():
                         swarm.kill()
                         logger.info("Auto-killed swarm for: %s", evt.challenge_name)
+                dashboard.add_event(evt.kind, evt.challenge_name)
 
             parts: list[str] = []
             for evt in events:
@@ -139,6 +145,7 @@ async def run_event_loop(
             for name, task in list(deps.swarm_tasks.items()):
                 if task.done():
                     parts.append(f"SOLVER FINISHED: Swarm for '{name}' completed. Check results or retry.")
+                    dashboard.add_event("swarm_finished", name)
                     deps.swarm_tasks.pop(name, None)
 
             # Drain solver-to-coordinator messages
@@ -146,6 +153,7 @@ async def run_event_loop(
                 try:
                     solver_msg = deps.coordinator_inbox.get_nowait()
                     parts.append(f"SOLVER MESSAGE: {solver_msg}")
+                    dashboard.add_event("solver_message", solver_msg)
                 except asyncio.QueueEmpty:
                     break
 
@@ -155,6 +163,7 @@ async def run_event_loop(
                     op_msg = deps.operator_inbox.get_nowait()
                     parts.append(f"OPERATOR MESSAGE: {op_msg}")
                     logger.info("Operator message: %s", op_msg[:200])
+                    dashboard.add_event("operator_message", op_msg)
                 except asyncio.QueueEmpty:
                     break
 
@@ -178,6 +187,7 @@ async def run_event_loop(
             if parts:
                 msg = "\n\n".join(parts)
                 logger.info("Event -> coordinator: %s", msg[:200])
+                dashboard.add_event("coordinator_event", msg)
                 await turn_fn(msg)
 
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -226,55 +236,15 @@ async def _auto_spawn_one(deps: CoordinatorDeps, challenge_name: str) -> None:
 async def _auto_spawn_unsolved(deps: CoordinatorDeps, poller) -> None:
     """Auto-spawn swarms for all unsolved challenges that don't have active swarms."""
     unsolved = poller.known_challenges - poller.known_solved
-    for name in sorted(unsolved):
+    challenge_stubs = await deps.ctfd.fetch_challenge_stubs()
+    stub_by_name = {ch["name"]: ch for ch in challenge_stubs}
+    ordered = sorted(
+        unsolved,
+        key=lambda name: (
+            -(stub_by_name.get(name, {}).get("solves", 0) or 0),
+            -(stub_by_name.get(name, {}).get("value", 0) or 0),
+            name.lower(),
+        ),
+    )
+    for name in ordered:
         await _auto_spawn_one(deps, name)
-
-
-async def _start_msg_server(inbox: asyncio.Queue, port: int = 0) -> asyncio.Server | None:
-    """Start a tiny HTTP server that accepts operator messages via POST."""
-
-    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        try:
-            # Read HTTP request
-            request_line = await asyncio.wait_for(reader.readline(), timeout=5)
-            headers: dict[str, str] = {}
-            while True:
-                line = await asyncio.wait_for(reader.readline(), timeout=5)
-                if line in (b"\r\n", b"\n", b""):
-                    break
-                if b":" in line:
-                    k, v = line.decode().split(":", 1)
-                    headers[k.strip().lower()] = v.strip()
-
-            method = request_line.decode().split()[0] if request_line else ""
-            content_length = int(headers.get("content-length", 0))
-
-            if method == "POST" and content_length > 0:
-                body = await asyncio.wait_for(reader.read(content_length), timeout=5)
-                try:
-                    data = json.loads(body)
-                    message = data.get("message", body.decode())
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    message = body.decode("utf-8", errors="replace")
-
-                inbox.put_nowait(message)
-                resp = json.dumps({"ok": True, "queued": message[:200]})
-                writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(resp)}\r\n\r\n{resp}".encode())
-            else:
-                resp = json.dumps({"error": "POST with JSON body required", "usage": "POST {\"message\": \"...\"}"})
-                writer.write(f"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {len(resp)}\r\n\r\n{resp}".encode())
-
-            await writer.drain()
-        except Exception:
-            pass
-        finally:
-            writer.close()
-
-    try:
-        server = await asyncio.start_server(_handle, "127.0.0.1", port)
-        actual_port = server.sockets[0].getsockname()[1]
-        logger.info(f"Operator message endpoint listening on http://127.0.0.1:{actual_port}")
-        return server
-    except OSError as e:
-        logger.warning(f"Could not start operator message endpoint: {e}")
-        return None

@@ -1,6 +1,6 @@
 # CTF Agent
 
-Autonomous CTF (Capture The Flag) solver that races multiple AI models against challenges in parallel. Built in a weekend, we used it to solve all 52/52 challenges and win **1st place at BSidesSF 2026 CTF**.
+Autonomous CTF (Capture The Flag) solver that attacks challenges from CTFd and now exposes a live local dashboard for challenge and solver inspection. Built in a weekend, we used it to solve all 52/52 challenges and win **1st place at BSidesSF 2026 CTF**.
 
 Built by [Veria Labs](https://verialabs.com), founded by members of [.;,;.](https://ctftime.org/team/222911) (smiley), the [#1 US CTF team on CTFTime in 2024 and 2025](https://ctftime.org/stats/2024/US). We build AI agents that find and exploit real security vulnerabilities for large enterprises.
 
@@ -14,7 +14,7 @@ The agent solves challenges across all categories — pwn, rev, crypto, forensic
 
 ## How It Works
 
-A **coordinator** LLM manages the competition while **solver swarms** attack individual challenges. Each swarm runs multiple models simultaneously — the first to find the flag wins.
+A **coordinator** LLM manages the competition while **solver swarms** attack individual challenges. The default setup now runs a single `gpt-5.4` Codex solver at `high` reasoning effort, plus a local web dashboard for live visibility.
 
 ```
                         +-----------------+
@@ -65,25 +65,28 @@ docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .
 
 # Configure credentials
 cp .env.example .env
-# Edit .env with your API keys and CTFd token
+# Edit .env with your OpenAI API key and CTFd token
 
 # Run against a CTFd instance
 uv run ctf-solve \
   --ctfd-url https://ctf.example.com \
   --ctfd-token ctfd_your_token \
   --challenges-dir challenges \
+  --web-port 9400 \
   --max-challenges 10 \
   -v
 ```
 
+Then open `http://127.0.0.1:9400` to inspect challenge status, solver status, recent events, and live traces.
+
 ## Coordinator Backends
 
 ```bash
-# Claude SDK coordinator (default)
-uv run ctf-solve --coordinator claude ...
-
-# Codex coordinator (GPT-5.4 via JSON-RPC)
+# Codex coordinator (default, GPT-5.4 high)
 uv run ctf-solve --coordinator codex ...
+
+# Claude SDK coordinator (optional override)
+uv run ctf-solve --coordinator claude ...
 ```
 
 ## Solver Models
@@ -92,11 +95,7 @@ Default model lineup (configurable in `backend/models.py`):
 
 | Model | Provider | Notes |
 |-------|----------|-------|
-| Claude Opus 4.6 (medium) | Claude SDK | Balanced speed/quality |
-| Claude Opus 4.6 (max) | Claude SDK | Deep reasoning |
-| GPT-5.4 | Codex | Best overall solver |
-| GPT-5.4-mini | Codex | Fast, good for easy challenges |
-| GPT-5.3-codex | Codex | Reasoning model (xhigh effort) |
+| GPT-5.4 (high) | Codex | Default solver and coordinator path |
 
 ## Sandbox Tooling
 
@@ -114,11 +113,12 @@ Each solver gets an isolated Docker container pre-loaded with CTF tools:
 
 ## Features
 
-- **Multi-model racing** — multiple AI models attack each challenge simultaneously
+- **Focused default lineup** — runs `gpt-5.4` at high reasoning effort out of the box
 - **Auto-spawn** — new challenges detected and attacked automatically
 - **Coordinator LLM** — reads solver traces, crafts targeted technical guidance
 - **Cross-solver insights** — findings shared between models via message bus
 - **Docker sandboxes** — isolated containers with full CTF tooling
+- **Web dashboard** — inspect challenges, active swarms, solver traces, and operator messages
 - **Operator messaging** — send hints to running solvers mid-competition
 
 ## Configuration
@@ -132,9 +132,7 @@ cp .env.example .env
 ```env
 CTFD_URL=https://ctf.example.com
 CTFD_TOKEN=ctfd_your_token
-ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
-GEMINI_API_KEY=...
 ```
 
 All settings can also be passed as environment variables or CLI flags.
@@ -143,9 +141,9 @@ All settings can also be passed as environment variables or CLI flags.
 
 - Python 3.14+
 - Docker
-- API keys for at least one provider (Anthropic, OpenAI, Google)
+- OpenAI API key for the default Codex-based setup
 - `codex` CLI (for Codex solver/coordinator)
-- `claude` CLI (bundled with claude-agent-sdk)
+- `claude` CLI only if you explicitly switch the coordinator or solvers to Claude
 
 ## Acknowledgements
 

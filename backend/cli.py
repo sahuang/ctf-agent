@@ -36,10 +36,10 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--challenge", default=None, help="Solve a single challenge directory")
 @click.option("--challenges-dir", default="challenges", help="Directory for challenge files")
 @click.option("--no-submit", is_flag=True, help="Dry run — don't submit flags")
-@click.option("--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-6)")
-@click.option("--coordinator", default="claude", type=click.Choice(["claude", "codex"]), help="Coordinator backend")
+@click.option("--coordinator-model", default=None, help="Model for coordinator (default: codex/gpt-5.4/xhigh)")
+@click.option("--coordinator", default="codex", type=click.Choice(["claude", "codex"]), help="Coordinator backend")
 @click.option("--max-challenges", default=10, type=int, help="Max challenges solved concurrently")
-@click.option("--msg-port", default=0, type=int, help="Operator message port (0 = auto)")
+@click.option("--web-port", "--msg-port", default=0, type=int, help="Dashboard/operator HTTP port (0 = auto)")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose logging")
 def main(
     ctfd_url: str | None,
@@ -52,7 +52,7 @@ def main(
     coordinator_model: str | None,
     coordinator: str,
     max_challenges: int,
-    msg_port: int,
+    web_port: int,
     verbose: bool,
 ) -> None:
     """CTF Agent — multi-model solver swarm.
@@ -80,7 +80,7 @@ def main(
     if challenge:
         asyncio.run(_run_single(settings, challenge, model_specs, no_submit, max_challenges))
     else:
-        asyncio.run(_run_coordinator(settings, model_specs, challenges_dir, no_submit, coordinator_model, coordinator, max_challenges, msg_port))
+        asyncio.run(_run_coordinator(settings, model_specs, challenges_dir, no_submit, coordinator_model, coordinator, max_challenges, web_port))
 
 
 async def _run_single(
@@ -191,10 +191,10 @@ async def _run_coordinator(
 
 @click.command()
 @click.argument("message")
-@click.option("--port", default=9400, type=int, help="Coordinator message port")
+@click.option("--port", default=9400, type=int, help="Dashboard/operator HTTP port")
 @click.option("--host", default="127.0.0.1", help="Coordinator host")
 def msg(message: str, port: int, host: str) -> None:
-    """Send a message to the running coordinator."""
+    """Send a message to the running coordinator via the dashboard server."""
     import json
     import urllib.request
 

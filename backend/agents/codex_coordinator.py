@@ -22,6 +22,7 @@ from backend.agents.coordinator_core import (
 from backend.agents.coordinator_loop import build_deps, run_event_loop
 from backend.config import Settings
 from backend.deps import CoordinatorDeps
+from backend.models import codex_reasoning_effort, model_id_from_spec
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,11 @@ class CodexCoordinator:
 
     def __init__(self, deps: CoordinatorDeps, model: str = "gpt-5.4") -> None:
         self.deps = deps
-        self.model = model
+        if model.startswith(("codex/", "bedrock/", "azure/", "zen/", "google/", "claude-sdk/")):
+            self.model_spec = model
+        else:
+            self.model_spec = f"codex/{model}"
+        self.model = model_id_from_spec(self.model_spec)
         self._proc: asyncio.subprocess.Process | None = None
         self._thread_id: str | None = None
         self._pending_responses: dict[int, asyncio.Future] = {}
@@ -162,7 +167,7 @@ class CodexCoordinator:
         })
         await self._send_notification("initialized", {})
 
-        resp = await self._rpc("thread/start", {
+        thread_params = {
             "model": self.model,
             "personality": "pragmatic",
             "baseInstructions": COORDINATOR_PROMPT,
@@ -170,9 +175,14 @@ class CodexCoordinator:
             "approvalPolicy": "on-request",
             "sandbox": "read-only",
             "dynamicTools": COORDINATOR_TOOLS,
-        })
+        }
+        reasoning = codex_reasoning_effort(self.model_spec)
+        if reasoning:
+            thread_params["reasoningEffort"] = reasoning
+
+        resp = await self._rpc("thread/start", thread_params)
         self._thread_id = resp.get("result", {}).get("thread", {}).get("id", "")
-        logger.info(f"Codex coordinator started (thread={self._thread_id}, model={self.model})")
+        logger.info(f"Codex coordinator started (thread={self._thread_id}, model={self.model_spec})")
 
     async def turn(self, message: str) -> None:
         """Send a message and wait for the model to finish its turn."""
@@ -336,7 +346,7 @@ async def run_codex_coordinator(
     )
     deps.msg_port = msg_port
 
-    resolved_model = coordinator_model or "gpt-5.4"
+    resolved_model = coordinator_model or "codex/gpt-5.4/xhigh"
     coordinator = CodexCoordinator(deps, model=resolved_model)
     await coordinator.start()
 

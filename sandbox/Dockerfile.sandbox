@@ -45,16 +45,20 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Podman (nested containers — run challenge Docker images inside sandbox) ───
-# Ubuntu 22.04 needs the kubic repo for podman
-RUN apt-get update && apt-get install -y curl gnupg2 \
-    && . /etc/os-release \
-    && echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/ /" \
-       > /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list \
-    && curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/Release.key" \
-       | gpg --dearmor -o /etc/apt/trusted.gpg.d/kubic.gpg \
-    && apt-get update && apt-get install -y podman buildah fuse-overlayfs slirp4netns \
-    && rm -rf /var/lib/apt/lists/* \
-    || echo "Podman install failed (non-fatal) — nested containers will not be available"
+# Disabled by default because it is optional and significantly increases build cost.
+ARG INSTALL_PODMAN=0
+RUN if [ "$INSTALL_PODMAN" = "1" ]; then \
+        apt-get update && apt-get install -y curl gnupg2 \
+        && . /etc/os-release \
+        && echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/ /" \
+           > /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list \
+        && curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/Release.key" \
+           | gpg --dearmor -o /etc/apt/trusted.gpg.d/kubic.gpg \
+        && apt-get update && apt-get install -y podman buildah fuse-overlayfs slirp4netns \
+        && rm -rf /var/lib/apt/lists/*; \
+    else \
+        echo "Skipping Podman install (set INSTALL_PODMAN=1 to enable nested containers)."; \
+    fi
 
 # ── radare2 ───────────────────────────────────────────────────────────────────
 RUN git clone --depth=1 https://github.com/radareorg/radare2 /tmp/r2 \
